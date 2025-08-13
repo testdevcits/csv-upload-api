@@ -4,19 +4,21 @@ const mongoose = require("mongoose");
 const multer = require("multer");
 const csvParser = require("csv-parser");
 const fs = require("fs");
-const log = require("./logging");
-const Order = require("./models/Order");
+const log = require("../logging"); // adjust path for moved file
+const Order = require("../models/Order");
 
 const app = express();
 const upload = multer({ dest: "uploads/" });
 
-// Connect to MongoDB
-mongoose
-  .connect(process.env.MONGODB_URI || "mongodb://localhost:27017/pwnorders")
-  .then(() => log("MongoDB connected", "INFO"))
-  .catch((err) => log(`MongoDB connection error: ${err}`, "ERROR"));
+// Connect to MongoDB (only if not already connected)
+if (mongoose.connection.readyState === 0) {
+  mongoose
+    .connect(process.env.MONGODB_URI || "mongodb://localhost:27017/pwnorders")
+    .then(() => log("MongoDB connected", "INFO"))
+    .catch((err) => log(`MongoDB connection error: ${err}`, "ERROR"));
+}
 
-// Root route for status check
+// Root route
 app.get("/", (req, res) => {
   const clientIp =
     req.headers["x-forwarded-for"] || req.connection.remoteAddress;
@@ -99,12 +101,13 @@ app.post("/upload-csv", upload.single("file"), (req, res) => {
     });
 });
 
-// Only start server locally; export app for Vercel
-if (process.env.VERCEL !== "1") {
+// Export for Vercel
+module.exports = app;
+
+// Run locally with nodemon
+if (process.env.NODE_ENV !== "production") {
   const PORT = process.env.PORT || 3000;
   app.listen(PORT, () => {
     log(`Server listening on port ${PORT}`, "INFO");
   });
 }
-
-module.exports = app;
