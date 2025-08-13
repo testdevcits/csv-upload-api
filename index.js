@@ -6,12 +6,12 @@ const csvParser = require("csv-parser");
 const fs = require("fs");
 const path = require("path");
 
-const log = require("./logging");
+const log = require("./logging"); // custom logger
 const Order = require("./models/Order");
 
 const app = express();
 
-// Upload directory
+// ===== Upload Directory =====
 const uploadDir =
   process.env.NODE_ENV === "production"
     ? "/tmp/uploads"
@@ -23,7 +23,7 @@ if (process.env.NODE_ENV !== "production" && !fs.existsSync(uploadDir)) {
 
 const upload = multer({ dest: uploadDir });
 
-// Connect to MongoDB
+// ===== MongoDB Connection =====
 if (mongoose.connection.readyState === 0) {
   mongoose
     .connect(process.env.MONGODB_URI, { serverSelectionTimeoutMS: 5000 })
@@ -31,7 +31,7 @@ if (mongoose.connection.readyState === 0) {
     .catch((err) => log(`MongoDB connection error: ${err}`, "ERROR"));
 }
 
-// Middleware to check optional Bearer token
+// ===== Auth Middleware (optional Bearer) =====
 function authMiddleware(req, res, next) {
   const token = req.headers["authorization"];
   if (process.env.API_BEARER_TOKEN) {
@@ -42,7 +42,7 @@ function authMiddleware(req, res, next) {
   next();
 }
 
-// Root route
+// ===== Root Route =====
 app.get("/", (req, res) => {
   const clientIp =
     req.headers["x-forwarded-for"] || req.connection.remoteAddress;
@@ -50,7 +50,7 @@ app.get("/", (req, res) => {
   res.send("✅ Server running");
 });
 
-// CSV Upload route (protected if API_BEARER_TOKEN is set)
+// ===== CSV Upload Route =====
 app.post("/upload-csv", authMiddleware, upload.single("file"), (req, res) => {
   const clientIp =
     req.headers["x-forwarded-for"] || req.connection.remoteAddress;
@@ -95,12 +95,15 @@ app.post("/upload-csv", authMiddleware, upload.single("file"), (req, res) => {
       try {
         await Order.insertMany(orders, { ordered: false });
         log(`Inserted ${orders.length} orders`, "INFO", clientIp);
-        res.json({ message: "CSV uploaded successfully" });
+        res.json({
+          message: "CSV uploaded successfully",
+          inserted: orders.length,
+        });
       } catch (err) {
         log(`DB error: ${err}`, "ERROR", clientIp);
         res.status(500).json({ error: "Error saving to DB" });
       } finally {
-        fs.unlink(filePath, () => {});
+        fs.unlink(filePath, () => {}); // cleanup temp file
       }
     })
     .on("error", (err) => {
@@ -110,7 +113,7 @@ app.post("/upload-csv", authMiddleware, upload.single("file"), (req, res) => {
     });
 });
 
-// **Do NOT use app.listen() in production on Vercel**
+// ===== Development Server =====
 if (process.env.NODE_ENV !== "production") {
   const PORT = process.env.PORT || 3000;
   app.listen(PORT, () => log(`Server running on port ${PORT}`, "INFO"));
