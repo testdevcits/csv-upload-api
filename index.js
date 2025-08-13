@@ -5,8 +5,8 @@ const multer = require("multer");
 const csvParser = require("csv-parser");
 const fs = require("fs");
 const path = require("path");
-
-const log = require("./logging"); // custom logger
+const axios = require("axios");
+const log = require("./logging"); // your custom logger
 const Order = require("./models/Order");
 
 const app = express();
@@ -50,10 +50,11 @@ app.get("/", (req, res) => {
   res.send("✅ Server running");
 });
 
-// ===== CSV Upload Route =====
+// ===== CSV Upload & Forwarding Route =====
 app.post("/upload-csv", authMiddleware, upload.single("file"), (req, res) => {
   const clientIp =
     req.headers["x-forwarded-for"] || req.connection.remoteAddress;
+
   if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
   const orders = [];
@@ -64,46 +65,101 @@ app.post("/upload-csv", authMiddleware, upload.single("file"), (req, res) => {
     .pipe(csvParser())
     .on("data", (row) => {
       if (!row.pwnOrderId || !row.email) return;
-      orders.push({
-        pwnOrderId: row.pwnOrderId,
-        pwnOrderStatus: row.pwnOrderStatus,
-        confirmationCode: row.confirmationCode,
-        pwnCreatedAt: row.pwnCreatedAt ? new Date(row.pwnCreatedAt) : null,
-        pwnExpiresAt: row.pwnExpiresAt ? new Date(row.pwnExpiresAt) : null,
-        address: row.address,
-        visitType: row.visitType,
-        testTypes: row.testTypes,
-        reasonForTesting: row.reasonForTesting,
-        pwnLink: row.pwnLink,
-        pwnPhysicianName: row.pwnPhysicianName,
-        externalId: row.externalId,
-        providerId: Number(row.providerId),
-        firstName: row.firstName,
-        lastName: row.lastName,
-        dob: row.dob ? new Date(row.dob) : null,
-        state: row.state,
-        accountNumber: row.accountNumber,
-        homePhone: row.homePhone,
-        workPhone: row.workPhone,
-        mobilePhone: row.mobilePhone,
-        zip: row.zip,
-        email: row.email,
-        gender: row.gender,
-      });
+
+      // Transform row into JSON payload
+      const addrParts = (row.address || "").split(",");
+      const payload = {
+        order: {
+          reference: row.pwnOrderId,
+          bill_type: "1",
+          visit_type: row.visitType || "N",
+          take_tests_same_day: true,
+          account_number: row.accountNumber || "",
+          confirmation_code: row.confirmationCode || "",
+          test_types: (row.testTypes || "").split(";").map((t) => t.trim()),
+          test_names: (row.testTypes || "")
+            .split(";")
+            .map((t) => t.trim() + " - Test"),
+          reason_for_testing: row.reasonForTesting || "routine_check",
+          customer: {
+            first_name: row.firstName || "",
+            last_name: row.lastName || "",
+            phone: row.homePhone || "",
+            birth_date: row.dob || "",
+            gender: row.gender || "",
+            email: row.email || "",
+            address: {
+              line: addrParts[0] || "",
+              city: addrParts[1] || "",
+              state: row.state || "",
+              zip: row.zip || "",
+            },
+            draw_location: {
+              line: addrParts[0] || "",
+              city: addrParts[1] || "",
+              state: row.state || "",
+              zip: row.zip || "",
+              country: "USA",
+            },
+            created_at: row.pwnCreatedAt || "",
+            expires_at: row.pwnExpiresAt || "",
+            status: row.pwnOrderStatus || "",
+            external_id: row.externalId || "",
+            provider_id: row.providerId || "",
+          },
+          physician_review: { name: row.pwnPhysicianName || "" },
+          links: { ui_customer: row.pwnLink || "" },
+        },
+      };
+
+      orders.push(payload);
     })
     .on("end", async () => {
       try {
-        await Order.insertMany(orders, { ordered: false });
+        // Insert to MongoDB first
+        await Order.insertMany(
+          orders.map((o) => o.order),
+          { ordered: false }
+        );
         log(`Inserted ${orders.length} orders`, "INFO", clientIp);
+
+        // Send each order to external API
+        const API_URL = process.env.API_URL;
+        const errors = [];
+        for (let i = 0; i < orders.length; i++) {
+          try {
+            await axios.post(API_URL, orders[i], {
+              headers: {
+                "Content-Type": "application/json",
+                ...(process.env.API_BEARER_TOKEN
+                  ? { Authorization: `Bearer ${process.env.API_BEARER_TOKEN}` }
+                  : {}),
+              },
+            });
+          } catch (err) {
+            errors.push(
+              `Row ${i + 1} failed: ${err.response?.status || ""} - ${
+                err.message
+              }`
+            );
+            log(errors[errors.length - 1], "ERROR", clientIp);
+          }
+        }
+
+        if (errors.length)
+          return res
+            .status(400)
+            .json({ message: "Some rows failed", details: errors });
+
         res.json({
-          message: "CSV uploaded successfully",
+          message: "CSV uploaded and sent successfully",
           inserted: orders.length,
         });
       } catch (err) {
-        log(`DB error: ${err}`, "ERROR", clientIp);
-        res.status(500).json({ error: "Error saving to DB" });
+        log(`DB/Upload error: ${err}`, "ERROR", clientIp);
+        res.status(500).json({ error: "Error processing CSV" });
       } finally {
-        fs.unlink(filePath, () => {}); // cleanup temp file
+        fs.unlink(filePath, () => {});
       }
     })
     .on("error", (err) => {
@@ -114,8 +170,8 @@ app.post("/upload-csv", authMiddleware, upload.single("file"), (req, res) => {
 });
 
 // ===== Development Server =====
+const PORT = process.env.PORT || 3000;
 if (process.env.NODE_ENV !== "production") {
-  const PORT = process.env.PORT || 3000;
   app.listen(PORT, () => log(`Server running on port ${PORT}`, "INFO"));
 }
 
