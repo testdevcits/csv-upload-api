@@ -5,27 +5,21 @@ const multer = require("multer");
 const csvParser = require("csv-parser");
 const fs = require("fs");
 const path = require("path");
-
-// Correct paths for root index.js
-const log = require("./logging"); // updated path
-const Order = require("./models/Order"); // updated path
+const log = require("./logging"); // logging helper
+const Order = require("./models/Order");
 
 const app = express();
 
-// Use /tmp for Vercel, uploads/ for local
+// Upload folder
 const uploadDir =
   process.env.NODE_ENV === "production"
     ? "/tmp/uploads"
     : path.join(__dirname, "uploads");
-
-// Make sure uploads folder exists locally
-if (process.env.NODE_ENV !== "production" && !fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
 const upload = multer({ dest: uploadDir });
 
-// Connect to MongoDB only if not connected
+// Connect MongoDB
 if (mongoose.connection.readyState === 0) {
   mongoose
     .connect(process.env.MONGODB_URI || "mongodb://localhost:27017/pwnorders", {
@@ -35,34 +29,35 @@ if (mongoose.connection.readyState === 0) {
     .catch((err) => log(`MongoDB connection error: ${err}`, "ERROR"));
 }
 
-// Root route for health check
+// Health check
 app.get("/", (req, res) => {
   const clientIp =
     req.headers["x-forwarded-for"] || req.connection.remoteAddress;
-  log("Status check: Server running", "INFO", clientIp);
+  log("Server running", "INFO", clientIp);
   res.send("✅ Server running");
 });
 
-// CSV upload route
+// Upload CSV
 app.post("/upload-csv", upload.single("file"), (req, res) => {
   const clientIp =
     req.headers["x-forwarded-for"] || req.connection.remoteAddress;
 
   if (!req.file) {
     log("No file uploaded", "ERROR", clientIp);
-    return res.status(400).json({ error: "No file uploaded" });
+    return res
+      .status(400)
+      .json({ status: "error", message: "No file uploaded" });
   }
 
   const orders = [];
   const filePath = req.file.path;
-  const csvEncoding = process.env.CSV_ENCODING || "utf-8";
 
-  fs.createReadStream(filePath, { encoding: csvEncoding })
+  fs.createReadStream(filePath)
     .pipe(csvParser())
     .on("data", (row) => {
       if (!row.pwnOrderId || !row.email) {
         log(
-          "Skipping invalid row: missing pwnOrderId or email",
+          `Skipping invalid row: missing pwnOrderId or email`,
           "ERROR",
           clientIp
         );
@@ -97,34 +92,37 @@ app.post("/upload-csv", upload.single("file"), (req, res) => {
     })
     .on("end", async () => {
       try {
-        await Order.insertMany(orders, { ordered: false });
-        log(`Inserted ${orders.length} orders from CSV.`, "INFO", clientIp);
-        res.json({ message: "CSV data uploaded and saved successfully" });
+        const inserted = await Order.insertMany(orders, { ordered: false });
+        log(`Inserted ${inserted.length} orders`, "INFO", clientIp);
+        res.json({
+          status: "success",
+          message: `CSV uploaded and saved to DB. Rows inserted: ${inserted.length}`,
+        });
       } catch (err) {
-        log(`Error saving data to database: ${err}`, "ERROR", clientIp);
-        res.status(500).json({ error: "Error saving data to database" });
+        log(`DB insert error: ${err}`, "ERROR", clientIp);
+        res
+          .status(500)
+          .json({ status: "error", message: "Error saving data to DB" });
       } finally {
         fs.unlink(filePath, (err) => {
           if (err) log(`Error deleting file: ${err}`, "ERROR", clientIp);
         });
       }
     })
-    .on("error", (error) => {
-      log(`Error parsing CSV file: ${error}`, "ERROR", clientIp);
-      fs.unlink(filePath, (err) => {
-        if (err) log(`Error deleting file: ${err}`, "ERROR", clientIp);
-      });
-      res.status(400).json({ error: "Error parsing CSV file" });
+    .on("error", (err) => {
+      log(`CSV parse error: ${err}`, "ERROR", clientIp);
+      fs.unlink(filePath, () => {});
+      res
+        .status(400)
+        .json({ status: "error", message: "Error parsing CSV file" });
     });
 });
 
 // Export for Vercel
 module.exports = app;
 
-// Local dev mode
+// Local dev
 if (process.env.NODE_ENV !== "production") {
   const PORT = process.env.PORT || 3000;
-  app.listen(PORT, () => {
-    log(`Server listening on port ${PORT}`, "INFO");
-  });
+  app.listen(PORT, () => log(`Server listening on port ${PORT}`, "INFO"));
 }
