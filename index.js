@@ -11,7 +11,6 @@ const Order = require("./models/Order");
 
 const app = express();
 
-// Upload folder
 const uploadDir =
   process.env.NODE_ENV === "production"
     ? "/tmp/uploads"
@@ -23,7 +22,7 @@ if (process.env.NODE_ENV !== "production" && !fs.existsSync(uploadDir)) {
 
 const upload = multer({ dest: uploadDir });
 
-// MongoDB connection
+// Connect to MongoDB
 if (mongoose.connection.readyState === 0) {
   mongoose
     .connect(process.env.MONGODB_URI, { serverSelectionTimeoutMS: 5000 })
@@ -31,23 +30,18 @@ if (mongoose.connection.readyState === 0) {
     .catch((err) => log(`MongoDB connection error: ${err}`, "ERROR"));
 }
 
-// Health check
+// Routes
 app.get("/", (req, res) => {
   const clientIp =
     req.headers["x-forwarded-for"] || req.connection.remoteAddress;
-  log("Status check: Server running", "INFO", clientIp);
+  log("Server running", "INFO", clientIp);
   res.send("✅ Server running");
 });
 
-// CSV upload
 app.post("/upload-csv", upload.single("file"), (req, res) => {
   const clientIp =
     req.headers["x-forwarded-for"] || req.connection.remoteAddress;
-
-  if (!req.file) {
-    log("No file uploaded", "ERROR", clientIp);
-    return res.status(400).json({ error: "No file uploaded" });
-  }
+  if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
   const orders = [];
   const filePath = req.file.path;
@@ -103,7 +97,7 @@ app.post("/upload-csv", upload.single("file"), (req, res) => {
     });
 });
 
-// Start server
+// **Do NOT use app.listen() in production on Vercel**
 if (process.env.NODE_ENV !== "production") {
   const PORT = process.env.PORT || 3000;
   app.listen(PORT, () => log(`Server running on port ${PORT}`, "INFO"));
