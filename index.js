@@ -99,7 +99,12 @@ app.post("/upload-csv", upload.single("file"), (req, res) => {
     });
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  log(`Server listening on port ${PORT}`, "INFO");
-});
+// Only start server locally; export app for Vercel
+if (process.env.VERCEL !== "1") {
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, () => {
+    log(`Server listening on port ${PORT}`, "INFO");
+  });
+}
+
+module.exports = app;
