@@ -56,6 +56,7 @@ app.post("/upload-csv", upload.single("file"), async (req, res) => {
   fs.createReadStream(filePath)
     .pipe(csvParser())
     .on("data", (row) => {
+      // Validate required fields
       if (!row.pwnOrderId || !row.email) {
         log(
           `Skipping invalid row: missing pwnOrderId or email`,
@@ -65,11 +66,19 @@ app.post("/upload-csv", upload.single("file"), async (req, res) => {
         return;
       }
 
+      // Convert providerId to number safely
+      let providerId = Number(row.providerId);
+      if (isNaN(providerId)) providerId = null;
+
+      // Convert dates safely
+      const pwnCreatedAt = row.pwnCreatedAt ? new Date(row.pwnCreatedAt) : null;
+      const dob = row.dob ? new Date(row.dob) : null;
+
       orders.push({
         pwnOrderId: row.pwnOrderId,
         pwnOrderStatus: row.pwnOrderStatus,
         confirmationCode: row.confirmationCode,
-        pwnCreatedAt: row.pwnCreatedAt ? new Date(row.pwnCreatedAt) : null,
+        pwnCreatedAt,
         pwnExpiresAt: row.pwnExpiresAt ? new Date(row.pwnExpiresAt) : null,
         address: row.address,
         visitType: row.visitType,
@@ -78,10 +87,10 @@ app.post("/upload-csv", upload.single("file"), async (req, res) => {
         pwnLink: row.pwnLink,
         pwnPhysicianName: row.pwnPhysicianName,
         externalId: row.externalId,
-        providerId: Number(row.providerId),
+        providerId,
         firstName: row.firstName,
         lastName: row.lastName,
-        dob: row.dob ? new Date(row.dob) : null,
+        dob,
         state: row.state,
         accountNumber: row.accountNumber,
         homePhone: row.homePhone,
@@ -107,13 +116,14 @@ app.post("/upload-csv", upload.single("file"), async (req, res) => {
           );
         } catch (err) {
           log(
-            `Batch ${i / batchSize + 1} insert error: ${err}`,
+            `Batch ${i / batchSize + 1} insert error: ${err.message || err}`,
             "ERROR",
             clientIp
           );
         }
       }
 
+      // Delete CSV file
       fs.unlink(filePath, (err) => {
         if (err) log(`Error deleting file: ${err}`, "ERROR", clientIp);
       });
