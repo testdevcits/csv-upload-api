@@ -5,6 +5,7 @@ const multer = require("multer");
 const csvParser = require("csv-parser");
 const fs = require("fs");
 const path = require("path");
+const log = require("./logging"); // logging helper
 const Order = require("./models/Order");
 
 const app = express();
@@ -20,36 +21,48 @@ const upload = multer({ dest: uploadDir });
 
 // Connect MongoDB
 if (mongoose.connection.readyState === 0) {
-  mongoose.connect(
-    process.env.MONGODB_URI || "mongodb://localhost:27017/pwnorders",
-    { serverSelectionTimeoutMS: 5000 }
-  );
+  mongoose
+    .connect(process.env.MONGODB_URI || "mongodb://localhost:27017/pwnorders", {
+      serverSelectionTimeoutMS: 5000,
+    })
+    .then(() => log("MongoDB connected", "INFO"))
+    .catch((err) => log(`MongoDB connection error: ${err}`, "ERROR"));
 }
 
 // Health check
 app.get("/", (req, res) => {
+  const clientIp =
+    req.headers["x-forwarded-for"] || req.connection.remoteAddress;
+  log("Server running", "INFO", clientIp);
   res.send("✅ Server running");
 });
 
 // Upload CSV
-app.post("/upload-csv", upload.single("file"), async (req, res) => {
+app.post("/upload-csv", upload.single("file"), (req, res) => {
+  const clientIp =
+    req.headers["x-forwarded-for"] || req.connection.remoteAddress;
+
   if (!req.file) {
+    log("No file uploaded", "ERROR", clientIp);
     return res
       .status(400)
       .json({ status: "error", message: "No file uploaded" });
   }
 
-  const filePath = req.file.path;
   const orders = [];
-  const batchSize = 10;
+  const filePath = req.file.path;
 
   fs.createReadStream(filePath)
     .pipe(csvParser())
     .on("data", (row) => {
       if (!row.pwnOrderId || !row.email) {
-        return; // skip invalid rows
+        log(
+          `Skipping invalid row: missing pwnOrderId or email`,
+          "ERROR",
+          clientIp
+        );
+        return;
       }
-
       orders.push({
         pwnOrderId: row.pwnOrderId,
         pwnOrderStatus: row.pwnOrderStatus,
@@ -78,25 +91,26 @@ app.post("/upload-csv", upload.single("file"), async (req, res) => {
       });
     })
     .on("end", async () => {
-      let insertedTotal = 0;
-
-      for (let i = 0; i < orders.length; i += batchSize) {
-        const batch = orders.slice(i, i + batchSize);
-        try {
-          const inserted = await Order.insertMany(batch, { ordered: false });
-          insertedTotal += inserted.length;
-        } catch (err) {
-          // silently ignore batch errors
-        }
+      try {
+        const inserted = await Order.insertMany(orders, { ordered: false });
+        log(`Inserted ${inserted.length} orders`, "INFO", clientIp);
+        res.json({
+          status: "success",
+          message: `CSV uploaded and saved to DB. Rows inserted: ${inserted.length}`,
+        });
+      } catch (err) {
+        log(`DB insert error: ${err}`, "ERROR", clientIp);
+        res
+          .status(500)
+          .json({ status: "error", message: "Error saving data to DB" });
+      } finally {
+        fs.unlink(filePath, (err) => {
+          if (err) log(`Error deleting file: ${err}`, "ERROR", clientIp);
+        });
       }
-
-      fs.unlink(filePath, () => {});
-      res.json({
-        status: "success",
-        message: `CSV uploaded and saved to DB. Total rows inserted: ${insertedTotal}`,
-      });
     })
-    .on("error", () => {
+    .on("error", (err) => {
+      log(`CSV parse error: ${err}`, "ERROR", clientIp);
       fs.unlink(filePath, () => {});
       res
         .status(400)
@@ -110,5 +124,5 @@ module.exports = app;
 // Local dev
 if (process.env.NODE_ENV !== "production") {
   const PORT = process.env.PORT || 3000;
-  app.listen(PORT, () => {});
+  app.listen(PORT, () => log(`Server listening on port ${PORT}`, "INFO"));
 }
