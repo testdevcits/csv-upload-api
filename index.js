@@ -11,6 +11,7 @@ const Order = require("./models/Order");
 
 const app = express();
 
+// Upload directory
 const uploadDir =
   process.env.NODE_ENV === "production"
     ? "/tmp/uploads"
@@ -30,7 +31,18 @@ if (mongoose.connection.readyState === 0) {
     .catch((err) => log(`MongoDB connection error: ${err}`, "ERROR"));
 }
 
-// Routes
+// Middleware to check optional Bearer token
+function authMiddleware(req, res, next) {
+  const token = req.headers["authorization"];
+  if (process.env.API_BEARER_TOKEN) {
+    if (!token || token !== `Bearer ${process.env.API_BEARER_TOKEN}`) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+  }
+  next();
+}
+
+// Root route
 app.get("/", (req, res) => {
   const clientIp =
     req.headers["x-forwarded-for"] || req.connection.remoteAddress;
@@ -38,7 +50,8 @@ app.get("/", (req, res) => {
   res.send("✅ Server running");
 });
 
-app.post("/upload-csv", upload.single("file"), (req, res) => {
+// CSV Upload route (protected if API_BEARER_TOKEN is set)
+app.post("/upload-csv", authMiddleware, upload.single("file"), (req, res) => {
   const clientIp =
     req.headers["x-forwarded-for"] || req.connection.remoteAddress;
   if (!req.file) return res.status(400).json({ error: "No file uploaded" });
