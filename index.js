@@ -4,21 +4,34 @@ const mongoose = require("mongoose");
 const multer = require("multer");
 const csvParser = require("csv-parser");
 const fs = require("fs");
-const log = require("../logging"); // adjust path for moved file
-const Order = require("../models/Order");
+const path = require("path");
+
+const log = require("./logging");
+const Order = require("./models/Order");
 
 const app = express();
-const upload = multer({ dest: "uploads/" });
 
-// Connect to MongoDB (only if not already connected)
+// Upload folder
+const uploadDir =
+  process.env.NODE_ENV === "production"
+    ? "/tmp/uploads"
+    : path.join(__dirname, "uploads");
+
+if (process.env.NODE_ENV !== "production" && !fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+
+const upload = multer({ dest: uploadDir });
+
+// MongoDB connection
 if (mongoose.connection.readyState === 0) {
   mongoose
-    .connect(process.env.MONGODB_URI || "mongodb://localhost:27017/pwnorders")
+    .connect(process.env.MONGODB_URI, { serverSelectionTimeoutMS: 5000 })
     .then(() => log("MongoDB connected", "INFO"))
     .catch((err) => log(`MongoDB connection error: ${err}`, "ERROR"));
 }
 
-// Root route
+// Health check
 app.get("/", (req, res) => {
   const clientIp =
     req.headers["x-forwarded-for"] || req.connection.remoteAddress;
@@ -26,7 +39,7 @@ app.get("/", (req, res) => {
   res.send("✅ Server running");
 });
 
-// Upload CSV endpoint
+// CSV upload
 app.post("/upload-csv", upload.single("file"), (req, res) => {
   const clientIp =
     req.headers["x-forwarded-for"] || req.connection.remoteAddress;
@@ -43,20 +56,13 @@ app.post("/upload-csv", upload.single("file"), (req, res) => {
   fs.createReadStream(filePath, { encoding: csvEncoding })
     .pipe(csvParser())
     .on("data", (row) => {
-      if (!row.pwnOrderId || !row.email) {
-        log(
-          "Skipping invalid row: missing pwnOrderId or email",
-          "ERROR",
-          clientIp
-        );
-        return;
-      }
+      if (!row.pwnOrderId || !row.email) return;
       orders.push({
         pwnOrderId: row.pwnOrderId,
         pwnOrderStatus: row.pwnOrderStatus,
         confirmationCode: row.confirmationCode,
-        pwnCreatedAt: new Date(row.pwnCreatedAt),
-        pwnExpiresAt: new Date(row.pwnExpiresAt),
+        pwnCreatedAt: row.pwnCreatedAt ? new Date(row.pwnCreatedAt) : null,
+        pwnExpiresAt: row.pwnExpiresAt ? new Date(row.pwnExpiresAt) : null,
         address: row.address,
         visitType: row.visitType,
         testTypes: row.testTypes,
@@ -67,7 +73,7 @@ app.post("/upload-csv", upload.single("file"), (req, res) => {
         providerId: Number(row.providerId),
         firstName: row.firstName,
         lastName: row.lastName,
-        dob: new Date(row.dob),
+        dob: row.dob ? new Date(row.dob) : null,
         state: row.state,
         accountNumber: row.accountNumber,
         homePhone: row.homePhone,
@@ -81,33 +87,26 @@ app.post("/upload-csv", upload.single("file"), (req, res) => {
     .on("end", async () => {
       try {
         await Order.insertMany(orders, { ordered: false });
-        log(`Inserted ${orders.length} orders from CSV.`, "INFO", clientIp);
-        res.json({ message: "CSV data uploaded and saved successfully" });
+        log(`Inserted ${orders.length} orders`, "INFO", clientIp);
+        res.json({ message: "CSV uploaded successfully" });
       } catch (err) {
-        log(`Error saving data to database: ${err}`, "ERROR", clientIp);
-        res.status(500).json({ error: "Error saving data to database" });
+        log(`DB error: ${err}`, "ERROR", clientIp);
+        res.status(500).json({ error: "Error saving to DB" });
       } finally {
-        fs.unlink(filePath, (err) => {
-          if (err) log(`Error deleting file: ${err}`, "ERROR", clientIp);
-        });
+        fs.unlink(filePath, () => {});
       }
     })
-    .on("error", (error) => {
-      log(`Error parsing CSV file: ${error}`, "ERROR", clientIp);
-      fs.unlink(filePath, (err) => {
-        if (err) log(`Error deleting file: ${err}`, "ERROR", clientIp);
-      });
-      res.status(400).json({ error: "Error parsing CSV file" });
+    .on("error", (err) => {
+      log(`CSV parse error: ${err}`, "ERROR", clientIp);
+      fs.unlink(filePath, () => {});
+      res.status(400).json({ error: "Error parsing CSV" });
     });
 });
 
-// Export for Vercel
-module.exports = app;
-
-// Run locally with nodemon
+// Start server
 if (process.env.NODE_ENV !== "production") {
   const PORT = process.env.PORT || 3000;
-  app.listen(PORT, () => {
-    log(`Server listening on port ${PORT}`, "INFO");
-  });
+  app.listen(PORT, () => log(`Server running on port ${PORT}`, "INFO"));
 }
+
+module.exports = app;

@@ -1,6 +1,6 @@
 {
-  "watch": ["index.js", "models"],
+  "watch": ["index.js", "models", "logging.js"],
   "ext": "js,json",
-  "ignore": ["*.log", "uploads/*"],
+  "ignore": ["*.log", "uploads/*", "logs/*", "node_modules/*"],
   "exec": "node index.js"
 }

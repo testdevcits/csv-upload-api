@@ -1,6 +1,6 @@
 const mongoose = require("mongoose");
 
-const OrderSchema = new mongoose.Schema({
+const orderSchema = new mongoose.Schema({
   pwnOrderId: { type: String, required: true },
   pwnOrderStatus: String,
   confirmationCode: String,
@@ -23,8 +23,8 @@ const OrderSchema = new mongoose.Schema({
   workPhone: String,
   mobilePhone: String,
   zip: String,
-  email: String,
+  email: { type: String, required: true },
   gender: String,
 });
 
-module.exports = mongoose.model("Order", OrderSchema);
+module.exports = mongoose.model("Order", orderSchema);
