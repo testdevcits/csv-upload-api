@@ -38,7 +38,7 @@ app.get("/", (req, res) => {
 });
 
 // Upload CSV
-app.post("/upload-csv", upload.single("file"), (req, res) => {
+app.post("/upload-csv", upload.single("file"), async (req, res) => {
   const clientIp =
     req.headers["x-forwarded-for"] || req.connection.remoteAddress;
 
@@ -49,8 +49,9 @@ app.post("/upload-csv", upload.single("file"), (req, res) => {
       .json({ status: "error", message: "No file uploaded" });
   }
 
-  const orders = [];
   const filePath = req.file.path;
+  const orders = [];
+  const batchSize = 10; // Send 10 rows per batch
 
   fs.createReadStream(filePath)
     .pipe(csvParser())
@@ -63,6 +64,7 @@ app.post("/upload-csv", upload.single("file"), (req, res) => {
         );
         return;
       }
+
       orders.push({
         pwnOrderId: row.pwnOrderId,
         pwnOrderStatus: row.pwnOrderStatus,
@@ -91,23 +93,35 @@ app.post("/upload-csv", upload.single("file"), (req, res) => {
       });
     })
     .on("end", async () => {
-      try {
-        const inserted = await Order.insertMany(orders, { ordered: false });
-        log(`Inserted ${inserted.length} orders`, "INFO", clientIp);
-        res.json({
-          status: "success",
-          message: `CSV uploaded and saved to DB. Rows inserted: ${inserted.length}`,
-        });
-      } catch (err) {
-        log(`DB insert error: ${err}`, "ERROR", clientIp);
-        res
-          .status(500)
-          .json({ status: "error", message: "Error saving data to DB" });
-      } finally {
-        fs.unlink(filePath, (err) => {
-          if (err) log(`Error deleting file: ${err}`, "ERROR", clientIp);
-        });
+      let insertedTotal = 0;
+
+      for (let i = 0; i < orders.length; i += batchSize) {
+        const batch = orders.slice(i, i + batchSize);
+        try {
+          const inserted = await Order.insertMany(batch, { ordered: false });
+          insertedTotal += inserted.length;
+          log(
+            `Batch ${i / batchSize + 1} inserted: ${inserted.length} rows`,
+            "INFO",
+            clientIp
+          );
+        } catch (err) {
+          log(
+            `Batch ${i / batchSize + 1} insert error: ${err}`,
+            "ERROR",
+            clientIp
+          );
+        }
       }
+
+      fs.unlink(filePath, (err) => {
+        if (err) log(`Error deleting file: ${err}`, "ERROR", clientIp);
+      });
+
+      res.json({
+        status: "success",
+        message: `CSV uploaded and saved to DB. Total rows inserted: ${insertedTotal}`,
+      });
     })
     .on("error", (err) => {
       log(`CSV parse error: ${err}`, "ERROR", clientIp);
