@@ -1,23 +1,13 @@
 require("dotenv").config();
 const express = require("express");
 const mongoose = require("mongoose");
-const multer = require("multer");
-const csvParser = require("csv-parser");
-const fs = require("fs");
-const path = require("path");
 const log = require("./logging"); // logging helper
 const Order = require("./models/Order");
 
 const app = express();
 
-// Upload folder
-const uploadDir =
-  process.env.NODE_ENV === "production"
-    ? "/tmp/uploads"
-    : path.join(__dirname, "uploads");
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
-
-const upload = multer({ dest: uploadDir });
+// Middleware to parse JSON
+app.use(express.json({ limit: "10mb" }));
 
 // Connect MongoDB
 if (mongoose.connection.readyState === 0) {
@@ -37,85 +27,56 @@ app.get("/", (req, res) => {
   res.send("✅ Server running");
 });
 
-// Upload CSV
-app.post("/upload-csv", upload.single("file"), (req, res) => {
+// Upload JSON instead of CSV
+app.post("/upload-csv", async (req, res) => {
   const clientIp =
     req.headers["x-forwarded-for"] || req.connection.remoteAddress;
 
-  if (!req.file) {
-    log("No file uploaded", "ERROR", clientIp);
-    return res
-      .status(400)
-      .json({ status: "error", message: "No file uploaded" });
-  }
+  try {
+    const orders = req.body;
 
-  const orders = [];
-  const filePath = req.file.path;
-
-  fs.createReadStream(filePath)
-    .pipe(csvParser())
-    .on("data", (row) => {
-      if (!row.pwnOrderId || !row.email) {
-        log(
-          `Skipping invalid row: missing pwnOrderId or email`,
-          "ERROR",
-          clientIp
-        );
-        return;
-      }
-      orders.push({
-        pwnOrderId: row.pwnOrderId,
-        pwnOrderStatus: row.pwnOrderStatus,
-        confirmationCode: row.confirmationCode,
-        pwnCreatedAt: row.pwnCreatedAt ? new Date(row.pwnCreatedAt) : null,
-        pwnExpiresAt: row.pwnExpiresAt ? new Date(row.pwnExpiresAt) : null,
-        address: row.address,
-        visitType: row.visitType,
-        testTypes: row.testTypes,
-        reasonForTesting: row.reasonForTesting,
-        pwnLink: row.pwnLink,
-        pwnPhysicianName: row.pwnPhysicianName,
-        externalId: row.externalId,
-        providerId: Number(row.providerId),
-        firstName: row.firstName,
-        lastName: row.lastName,
-        dob: row.dob ? new Date(row.dob) : null,
-        state: row.state,
-        accountNumber: row.accountNumber,
-        homePhone: row.homePhone,
-        workPhone: row.workPhone,
-        mobilePhone: row.mobilePhone,
-        zip: row.zip,
-        email: row.email,
-        gender: row.gender,
-      });
-    })
-    .on("end", async () => {
-      try {
-        const inserted = await Order.insertMany(orders, { ordered: false });
-        log(`Inserted ${inserted.length} orders`, "INFO", clientIp);
-        res.json({
-          status: "success",
-          message: `CSV uploaded and saved to DB. Rows inserted: ${inserted.length}`,
-        });
-      } catch (err) {
-        log(`DB insert error: ${err}`, "ERROR", clientIp);
-        res
-          .status(500)
-          .json({ status: "error", message: "Error saving data to DB" });
-      } finally {
-        fs.unlink(filePath, (err) => {
-          if (err) log(`Error deleting file: ${err}`, "ERROR", clientIp);
-        });
-      }
-    })
-    .on("error", (err) => {
-      log(`CSV parse error: ${err}`, "ERROR", clientIp);
-      fs.unlink(filePath, () => {});
-      res
+    if (!Array.isArray(orders) || orders.length === 0) {
+      log("Invalid JSON payload: must be a non-empty array", "ERROR", clientIp);
+      return res
         .status(400)
-        .json({ status: "error", message: "Error parsing CSV file" });
+        .json({
+          status: "error",
+          message: "Payload must be a non-empty JSON array",
+        });
+    }
+
+    // Validate required fields
+    const invalid = orders.filter((o) => !o.pwnOrderId || !o.email);
+    if (invalid.length > 0) {
+      log(
+        `Invalid records found: missing pwnOrderId or email`,
+        "ERROR",
+        clientIp
+      );
+      return res.status(400).json({
+        status: "error",
+        message: `Some records are missing required fields (pwnOrderId, email). Invalid count: ${invalid.length}`,
+      });
+    }
+
+    // Insert into MongoDB
+    const inserted = await Order.insertMany(orders, { ordered: false });
+    log(`Inserted ${inserted.length} orders`, "INFO", clientIp);
+
+    res.json({
+      status: "success",
+      message: `JSON uploaded and saved to DB. Rows inserted: ${inserted.length}`,
     });
+  } catch (err) {
+    log(`DB insert error: ${err}`, "ERROR", clientIp);
+    res
+      .status(500)
+      .json({
+        status: "error",
+        message: "Error saving data to DB",
+        details: err.message,
+      });
+  }
 });
 
 // Export for Vercel
