@@ -1,7 +1,7 @@
 require("dotenv").config();
 const express = require("express");
 const mongoose = require("mongoose");
-const log = require("./logging"); // logging helper
+const log = require("./logging");
 const Order = require("./models/Order");
 
 const app = express();
@@ -9,7 +9,7 @@ const app = express();
 // Middleware to parse JSON
 app.use(express.json({ limit: "10mb" }));
 
-// Connect MongoDB
+// Connect to MongoDB
 if (mongoose.connection.readyState === 0) {
   mongoose
     .connect(process.env.MONGODB_URI || "mongodb://localhost:27017/pwnorders", {
@@ -27,8 +27,8 @@ app.get("/", (req, res) => {
   res.send("✅ Server running");
 });
 
-// Upload JSON instead of CSV
-app.post("/upload-csv", async (req, res) => {
+// JSON upload endpoint (no CSV parsing)
+app.post("/upload-json", async (req, res) => {
   const clientIp =
     req.headers["x-forwarded-for"] || req.connection.remoteAddress;
 
@@ -37,52 +37,42 @@ app.post("/upload-csv", async (req, res) => {
 
     if (!Array.isArray(orders) || orders.length === 0) {
       log("Invalid JSON payload: must be a non-empty array", "ERROR", clientIp);
-      return res
-        .status(400)
-        .json({
-          status: "error",
-          message: "Payload must be a non-empty JSON array",
-        });
-    }
-
-    // Validate required fields
-    const invalid = orders.filter((o) => !o.pwnOrderId || !o.email);
-    if (invalid.length > 0) {
-      log(
-        `Invalid records found: missing pwnOrderId or email`,
-        "ERROR",
-        clientIp
-      );
       return res.status(400).json({
         status: "error",
-        message: `Some records are missing required fields (pwnOrderId, email). Invalid count: ${invalid.length}`,
+        message: "Payload must be a non-empty JSON array",
       });
     }
 
-    // Insert into MongoDB
+    const invalid = orders.filter((o) => !o.pwnOrderId || !o.email);
+    if (invalid.length > 0) {
+      log(`Invalid records: missing pwnOrderId or email`, "ERROR", clientIp);
+      return res.status(400).json({
+        status: "error",
+        message: `Some records are missing required fields. Invalid count: ${invalid.length}`,
+      });
+    }
+
     const inserted = await Order.insertMany(orders, { ordered: false });
     log(`Inserted ${inserted.length} orders`, "INFO", clientIp);
 
     res.json({
       status: "success",
-      message: `JSON uploaded and saved to DB. Rows inserted: ${inserted.length}`,
+      message: `JSON uploaded and saved. Rows inserted: ${inserted.length}`,
     });
   } catch (err) {
     log(`DB insert error: ${err}`, "ERROR", clientIp);
-    res
-      .status(500)
-      .json({
-        status: "error",
-        message: "Error saving data to DB",
-        details: err.message,
-      });
+    res.status(500).json({
+      status: "error",
+      message: "Error saving data to DB",
+      details: err.message,
+    });
   }
 });
 
 // Export for Vercel
 module.exports = app;
 
-// Local dev
+// Local dev mode
 if (process.env.NODE_ENV !== "production") {
   const PORT = process.env.PORT || 3000;
   app.listen(PORT, () => log(`Server listening on port ${PORT}`, "INFO"));
